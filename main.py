@@ -36,7 +36,13 @@ if df:
         ["GW + raggio", "Indirizzo + raggio"]
     )
 
-    raggio = st.slider("Raggio (metri)", 100, 50000, 5000)
+    raggio = st.slider(
+    "Raggio (metri)",
+    min_value=100,
+    max_value=5000,
+    value=500,
+    step=100
+    )
 
     mappa = None
     search_lat = search_lon = None
