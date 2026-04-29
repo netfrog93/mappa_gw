@@ -6,7 +6,7 @@ from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 
-# --- distanza in metri
+# --- distanza metri
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
@@ -16,99 +16,128 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * R * np.arcsin(np.sqrt(a))
 
 @st.cache_data
-def geocode_address(indirizzo):
-    geolocator = Nominatim(user_agent="streamlit_map")
-    return geolocator.geocode(indirizzo)
+def geocode(address):
+    geolocator = Nominatim(user_agent="gw_map")
+    return geolocator.geocode(address)
 
-st.title("Mappa GW")
+st.title("GW Network Map")
 
-uploaded_file = st.file_uploader("Carica CSV", type=["csv"])
+df = st.file_uploader("Carica CSV", type=["csv"])
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+if df:
+    df = pd.read_csv(df)
 
-    if {"GW", "LAT", "LON", "STATO"}.issubset(df.columns):
-
-        # --- FILTRI
-        col1, col2 = st.columns(2)
-
-        with col1:
-            gw_search = st.text_input("Cerca GW")
-
-        with col2:
-            raggio = st.slider("Raggio (metri)", 100, 50000, 5000)
-
-        indirizzo = st.text_input("Inserisci indirizzo")
-
-        if indirizzo:
-            location = geocode_address(indirizzo)
-
-            if location:
-                search_lat, search_lon = location.latitude, location.longitude
-
-                # distanza
-                df["distance_m"] = df.apply(
-                    lambda row: haversine(search_lat, search_lon, row["LAT"], row["LON"]),
-                    axis=1
-                )
-
-                # filtro raggio
-                df_filtrato = df[df["distance_m"] <= raggio]
-
-                # filtro GW
-                if gw_search:
-                    df_filtrato = df_filtrato[df_filtrato["GW"].str.contains(gw_search, case=False, na=False)]
-
-                # top 3
-                nearest = df_filtrato.nsmallest(3, "distance_m")
-
-                st.subheader("Risultati")
-                st.dataframe(df_filtrato[["GW", "STATO", "distance_m"]])
-
-                st.subheader("Top 3 più vicini")
-                st.dataframe(nearest[["GW", "STATO", "distance_m"]])
-
-                # --- mappa
-                mappa = folium.Map(location=[search_lat, search_lon], zoom_start=12)
-
-                # cerchio raggio
-                folium.Circle(
-                    location=[search_lat, search_lon],
-                    radius=raggio,
-                    color="blue",
-                    fill=False
-                ).add_to(mappa)
-
-                # punto cercato
-                folium.Marker(
-                    [search_lat, search_lon],
-                    popup="Indirizzo",
-                    icon=folium.Icon(color="blue", icon="home", prefix="fa")
-                ).add_to(mappa)
-
-                cluster = MarkerCluster().add_to(mappa)
-
-                # punti filtrati
-                for _, row in df_filtrato.iterrows():
-                    colore = "green" if row["STATO"] == "A" else "gray"
-
-                    folium.Marker(
-                        [row["LAT"], row["LON"]],
-                        popup=f"{row['GW']} - {row['distance_m']:.0f} m",
-                        icon=folium.Icon(color=colore, icon="signal", prefix="fa")
-                    ).add_to(cluster)
-
-                # top 3 evidenziati
-                for _, row in nearest.iterrows():
-                    folium.Marker(
-                        [row["LAT"], row["LON"]],
-                        popup=f"{row['GW']} - {row['distance_m']:.0f} m",
-                        icon=folium.Icon(color="red", icon="star", prefix="fa")
-                    ).add_to(mappa)
-
-                st_folium(mappa, width=800, height=500)
-
-            else:
-                st.error("Indirizzo non trovato")
-    else:
+    if not {"GW", "LAT", "LON", "STATO"}.issubset(df.columns):
         st.error("CSV non valido")
+        st.stop()
+
+    mode = st.radio(
+        "Modalità ricerca",
+        ["GW + raggio", "Indirizzo + raggio"]
+    )
+
+    raggio = st.slider("Raggio (metri)", 100, 50000, 5000)
+
+    mappa = None
+    search_lat = search_lon = None
+
+    # =========================
+    # MODALITÀ 1: GW + raggio
+    # =========================
+    if mode == "GW + raggio":
+        gw = st.text_input("GW da cercare")
+
+        if gw:
+            match = df[df["GW"] == gw]
+
+            if match.empty:
+                st.warning("GW non trovato")
+                st.stop()
+
+            search_lat = match.iloc[0]["LAT"]
+            search_lon = match.iloc[0]["LON"]
+
+    # =========================
+    # MODALITÀ 2: indirizzo
+    # =========================
+    else:
+        address = st.text_input("Inserisci indirizzo")
+
+        if address:
+            loc = geocode(address)
+
+            if not loc:
+                st.warning("Indirizzo non trovato")
+                st.stop()
+
+            search_lat, search_lon = loc.latitude, loc.longitude
+
+    # =========================
+    # CALCOLI COMUNI
+    # =========================
+    if search_lat is not None:
+
+        df["distance_m"] = df.apply(
+            lambda r: haversine(search_lat, search_lon, r["LAT"], r["LON"]),
+            axis=1
+        )
+
+        df_raggio = df[df["distance_m"] <= raggio]
+        nearest3 = df.nsmallest(3, "distance_m")
+
+        st.subheader("GW nel raggio")
+        st.dataframe(df_raggio[["GW", "STATO", "distance_m"]])
+
+        st.subheader("Top 3 più vicini")
+        st.dataframe(nearest3[["GW", "STATO", "distance_m"]])
+
+        # =========================
+        # MAPPA
+        # =========================
+        mappa = folium.Map(location=[search_lat, search_lon], zoom_start=12)
+
+        folium.Circle(
+            location=[search_lat, search_lon],
+            radius=raggio,
+            color="blue",
+            fill=False
+        ).add_to(mappa)
+
+        folium.Marker(
+            [search_lat, search_lon],
+            icon=folium.Icon(color="blue", icon="home", prefix="fa")
+        ).add_to(mappa)
+
+        cluster = MarkerCluster().add_to(mappa)
+
+        # tutti nel raggio
+        for _, row in df_raggio.iterrows():
+            folium.Marker(
+                [row["LAT"], row["LON"]],
+                popup=f"{row['GW']} - {row['distance_m']:.0f} m",
+                icon=folium.Icon(
+                    color="green" if row["STATO"] == "A" else "gray",
+                    icon="signal",
+                    prefix="fa"
+                )
+            ).add_to(cluster)
+
+        # evidenzia GW (solo modalità GW)
+        if mode == "GW + raggio":
+            gw_point = df[df["GW"] == gw].iloc[0]
+            folium.Marker(
+                [gw_point["LAT"], gw_point["LON"]],
+                popup=f"GW cercato: {gw_point['GW']}",
+                icon=folium.Icon(color="orange", icon="star", prefix="fa")
+            ).add_to(mappa)
+
+        # top 3 (solo modalità indirizzo)
+        if mode == "Indirizzo + raggio":
+            for _, row in nearest3.iterrows():
+                folium.Marker(
+                    [row["LAT"], row["LON"]],
+                    popup=f"TOP: {row['GW']} - {row['distance_m']:.0f} m",
+                    icon=folium.Icon(color="red", icon="star", prefix="fa")
+                ).add_to(mappa)
+
+        st_folium(mappa, width=800, height=500)
